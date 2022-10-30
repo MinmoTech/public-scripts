@@ -1,0 +1,92 @@
+#!/usr/bin/env ngs
+
+
+# This script first puts all the files or symlinks (and not directories) in the current directory into a list
+files = `find . -maxdepth 1 -type f -o -type l -printf '%P\n' | sort`.lines()
+# echo them all
+for file in files {
+  echo("file: $file")
+}
+# create a list of ipfs cids
+cids = files.map(F(file) `ipfs add -q --dereference-args $file`.lines()[0])
+# echo them all
+for cid in cids {
+  echo("cid: $cid")
+}
+# create a list of wrapped cids
+wrappedCids = files.map(F(file) `ipfs add -q -w --dereference-args $file`.lines()[1] + "/" + file)
+
+# echo them all
+for wrappedCid in wrappedCids {
+  echo("wrapped cid: $wrappedCid")
+}
+
+# try to get the youtube video id from the file name
+# example file name: "1184 - なにやってもうまくいかない _ 猫又おかゆ(cover)-QkQ5SfZ0YlM.webm"
+# pcre regex:
+youtube_id_regex = /^.*-([a-zA-Z0-9_-]{11})\.\w{3,4}$/
+song_title_regex = /^\d{4} - (.*)-[a-zA-Z0-9_-]{11}\.\w{3,4}$/
+
+youtube_ids = []
+song_titles = []
+for file in files {
+  try {
+    youtube_id_match = file ~ youtube_id_regex
+    youtube_ids.push(youtube_id_match.matches[1])
+  } catch(FieldNotFound) {
+    youtube_ids.push("")
+  }
+  try {
+    song_title_match = file ~ song_title_regex
+    song_titles.push(song_title_match.matches[1])
+  } catch(FieldNotFound) {
+    backup_song_title_match = file ~ /^\d{4} - (.*).\w{3,4}$/
+    try {
+      song_titles.push(backup_song_title_match.matches[1])
+    } catch(FieldNotFound) {
+      song_titles.push("")
+    }
+  }
+}
+
+
+audio_icon_cid = "Qmd2CmFGDr3gTLkWGHQdkqb7Rg8sw785ot1f4vRucQ1orr"
+thumbnail_urls = []
+for (i;len(files)) {
+  if youtube_ids[i] != "" {
+    thumbnail_urls.push("https://img.youtube.com/vi/" + youtube_ids[i] + "/0.jpg")
+  } else {
+    try {
+      `ffmpeg -f -i ${files[i]} -an -vcodec copy cover.jpg`
+      current_cover_cid = `ipfs add -q cover.jpg`.lines()[0]
+      thumbnail_urls.push("https://ipfs.io/ipfs/" + current_cover_cid)
+      `rm cover.jpg`
+    } catch(e:ProcessFail) {
+      thumbnail_urls.push("https://ipfs.io/ipfs/" + audio_icon_cid)
+    }
+  }
+}
+
+# create markdown document from the lists
+echo "# Music\n\n" > music.md
+for(i;len(files)) {
+  markdown = ""
+  markdown += "## ${song_titles[i]}\n\n"
+  # [![IMAGE ALT TEXT HERE](https://img.youtube.com/vi/YOUTUBE_VIDEO_ID_HERE/0.jpg)](https://www.youtube.com/watch?v=YOUTUBE_VIDEO_ID_HERE)
+  if youtube_ids[i] != "" {
+    # markdown += "[![https://www.youtube.com/watch?v=${youtube_ids[i]}](https://img.youtube.com/vi/${youtube_ids[i]}/0.jpg)](https://www.youtube.com/watch?v=${youtube_ids[i]})\n\n"
+    markdown += "<https://www.youtube.com/watch?v=${youtube_ids[i]}>\n\n"
+    markdown += "[![${song_titles[i]}](${thumbnail_urls[i]})](https://www.youtube.com/watch?v=${youtube_ids[i]})\n\n"
+    markdown = markdown + "- [Backup video url](https://ipfs.io/ipfs/${wrappedCids[i]})\n\n\n"
+  } else {
+    # markdown += "<https://ipfs.io/ipfs/${wrappedCids[i]}>\n\n"
+    markdown += "[https://ipfs.io/ipfs/${wrappedCids[i]}](https://ipfs.io/ipfs/${wrappedCids[i]})\n\n"
+    markdown += "[![${song_titles[i]}](${thumbnail_urls[i]})](https://ipfs.io/ipfs/${wrappedCids[i]})\n\n"
+  }
+  markdown += "\n\n"
+  `echo $markdown >> music.md`
+}
+
+# convert to html with pandoc
+pandoc music.md -s -o music.html
+ipfs add -q music.html
